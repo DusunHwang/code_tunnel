@@ -3,10 +3,14 @@
 
 import argparse
 import numpy as np
-from sklearn.model_selection import train_test_split
+from typing import Iterable, Tuple
+
+from sklearn.model_selection import KFold
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, Matern
+from sklearn.kernel_approximation import Nystroem
+from sklearn.linear_model import Ridge
 
 try:
     import torch
@@ -36,6 +40,22 @@ def train_exact_gpr(X_train, y_train, kernel="rbf"):
     model = GaussianProcessRegressor(kernel=kern, normalize_y=True)
     model.fit(X_train, y_train)
     return model
+
+
+def train_sor(X_train, y_train, subset_size=200, kernel="rbf"):
+    """Subset-of-Regressors using a random subset of training data."""
+    idx = np.random.choice(len(X_train), min(subset_size, len(X_train)), replace=False)
+    return train_exact_gpr(X_train[idx], y_train[idx], kernel=kernel)
+
+
+def train_nystrom_gpr(X_train, y_train, n_components=100, gamma=1.0):
+    """Approximate GPR using Nystroem features and ridge regression."""
+    transformer = Nystroem(gamma=gamma, n_components=n_components, random_state=0)
+    X_trans = transformer.fit_transform(X_train)
+    ridge = Ridge(alpha=1.0)
+    ridge.fit(X_trans, y_train)
+    residual_var = np.var(y_train - ridge.predict(X_trans))
+    return transformer, ridge, residual_var
 
 
 class GPyTorchSVGP(gpytorch.models.ApproximateGP if gpytorch else object):
@@ -91,6 +111,45 @@ def predict_svgp(model, likelihood, X_test, device="cpu"):
     return preds.mean.cpu().numpy(), preds.variance.cpu().numpy()
 
 
+def cross_validate_model(train_fn, X, y, n_splits=5, **train_kwargs):
+    """Run K-fold cross validation and compute error metrics."""
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+    metrics = []
+    errors: Iterable[float] = []
+    sigmas: Iterable[float] = []
+    for train_idx, test_idx in kf.split(X):
+        X_train, X_test = X[train_idx], X[test_idx]
+        y_train, y_test = y[train_idx], y[test_idx]
+        model_info = train_fn(X_train, y_train, **train_kwargs)
+
+        if train_fn is train_svgp:
+            model, likelihood = model_info
+            y_pred, var_pred = predict_svgp(model, likelihood, X_test)
+        elif train_fn is train_nystrom_gpr:
+            transformer, ridge, var_train = model_info
+            y_pred = ridge.predict(transformer.transform(X_test))
+            var_pred = np.ones_like(y_pred) * var_train
+        else:
+            model = model_info
+            if isinstance(model, GaussianProcessRegressor):
+                y_pred, std_pred = model.predict(X_test, return_std=True)
+                var_pred = std_pred ** 2
+            else:
+                y_pred = model.predict(X_test)
+                var_pred = np.var(y_train - model.predict(X_train)) * np.ones_like(y_pred)
+
+        mse = mean_squared_error(y_test, y_pred)
+        mae = mean_absolute_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
+        metrics.append({"mse": mse, "mae": mae, "r2": r2, "sigma_mean": var_pred.mean() ** 0.5})
+        errors.extend((y_test - y_pred) ** 2)
+        sigmas.extend(var_pred)
+
+    agg = {k: np.mean([m[k] for m in metrics]) for k in metrics[0]}
+    agg["corr_mse_sigma"] = np.corrcoef(errors, sigmas)[0, 1]
+    return agg
+
+
 def evaluate(model, X_test, y_test, predictive_variance=None):
     y_pred = model.predict(X_test) if predictive_variance is None else None
     if predictive_variance is not None:
@@ -112,25 +171,32 @@ def evaluate(model, X_test, y_test, predictive_variance=None):
 
 def main():
     parser = argparse.ArgumentParser(description="GPR sparse data pipeline")
+    parser.add_argument("--model", choices=["exact", "sor", "nystrom", "svgp", "all"], default="all")
+    parser.add_argument("--folds", type=int, default=5, help="number of CV folds")
     parser.add_argument("--test", action="store_true", help="run a quick test")
     args = parser.parse_args()
 
-    X, y = generate_sparse_data(n_samples=500 if args.test else 3000)
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    n_samples = 500 if args.test else 3000
+    X, y = generate_sparse_data(n_samples=n_samples)
 
-    print("Training Exact GPR...")
-    gpr = train_exact_gpr(X_train, y_train)
-    results = evaluate(gpr, X_test, y_test)
-    print("Exact GPR results", results)
+    def run(name, fn, **kw):
+        res = cross_validate_model(fn, X, y, n_splits=args.folds, **kw)
+        print(f"{name} CV results", res)
 
-    if gpytorch:
-        print("Training SVGP...")
-        svgp_model, likelihood = train_svgp(X_train, y_train, num_inducing=50)
-        mean, var = predict_svgp(svgp_model, likelihood, X_test)
-        svgp_results = evaluate(gpr, X_test, y_test, predictive_variance=(mean, var))
-        print("SVGP results", svgp_results)
-    else:
-        print("gpytorch not available; skipping SVGP")
+    if args.model in ("exact", "all"):
+        run("Exact GPR", train_exact_gpr)
+
+    if args.model in ("sor", "all"):
+        run("Subset of Regressors", train_sor)
+
+    if args.model in ("nystrom", "all"):
+        run("Nystroem GPR", train_nystrom_gpr)
+
+    if args.model in ("svgp", "all"):
+        if gpytorch:
+            run("SVGP", train_svgp)
+        else:
+            print("gpytorch not available; skipping SVGP")
 
 
 if __name__ == "__main__":
