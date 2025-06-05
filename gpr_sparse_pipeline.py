@@ -12,6 +12,7 @@ from sklearn.gaussian_process.kernels import RBF, Matern
 from sklearn.kernel_approximation import Nystroem
 from sklearn.linear_model import Ridge
 
+
 try:
     import torch
     import gpytorch
@@ -42,6 +43,7 @@ def train_exact_gpr(X_train, y_train, kernel="rbf"):
     return model
 
 
+
 def train_sor(X_train, y_train, subset_size=200, kernel="rbf"):
     """Subset-of-Regressors using a random subset of training data."""
     idx = np.random.choice(len(X_train), min(subset_size, len(X_train)), replace=False)
@@ -56,6 +58,7 @@ def train_nystrom_gpr(X_train, y_train, n_components=100, gamma=1.0):
     ridge.fit(X_trans, y_train)
     residual_var = np.var(y_train - ridge.predict(X_trans))
     return transformer, ridge, residual_var
+
 
 
 class GPyTorchSVGP(gpytorch.models.ApproximateGP if gpytorch else object):
@@ -109,6 +112,7 @@ def predict_svgp(model, likelihood, X_test, device="cpu"):
     with torch.no_grad(), gpytorch.settings.fast_pred_var():
         preds = likelihood(model(X_test_t))
     return preds.mean.cpu().numpy(), preds.variance.cpu().numpy()
+
 
 
 class DKLGP(gpytorch.models.ExactGP if gpytorch else object):
@@ -209,6 +213,7 @@ def cross_validate_model(train_fn, X, y, n_splits=5, **train_kwargs):
     return agg
 
 
+
 def evaluate(model, X_test, y_test, predictive_variance=None):
     y_pred = model.predict(X_test) if predictive_variance is None else None
     if predictive_variance is not None:
@@ -230,6 +235,7 @@ def evaluate(model, X_test, y_test, predictive_variance=None):
 
 def main():
     parser = argparse.ArgumentParser(description="GPR sparse data pipeline")
+
     parser.add_argument(
         "--model",
         choices=["exact", "sor", "nystrom", "svgp", "dkl", "all"],
@@ -266,6 +272,7 @@ def main():
             run("DKL", train_dkl)
         else:
             print("gpytorch not available; skipping DKL")
+
 
 
 if __name__ == "__main__":
