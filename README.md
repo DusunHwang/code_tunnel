@@ -18,3 +18,6 @@ python gpr_sparse_pipeline.py --model dkl --test
 ```
 
 Use `--test` for a quick run on smaller data.
+
+After each model is evaluated, a scatter plot of squared error vs predicted
+sigma is saved to a PNG file for both the training and test data.

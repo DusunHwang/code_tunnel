@@ -4,6 +4,7 @@
 import argparse
 import numpy as np
 from typing import Iterable, Tuple
+import matplotlib.pyplot as plt
 
 from sklearn.model_selection import KFold
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
@@ -171,8 +172,10 @@ def cross_validate_model(train_fn, X, y, n_splits=5, **train_kwargs):
     """Run K-fold cross validation and compute error metrics."""
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
     metrics = []
-    errors: Iterable[float] = []
-    sigmas: Iterable[float] = []
+    errors_train: Iterable[float] = []
+    sigmas_train: Iterable[float] = []
+    errors_test: Iterable[float] = []
+    sigmas_test: Iterable[float] = []
     for train_idx, test_idx in kf.split(X):
         X_train, X_test = X[train_idx], X[test_idx]
         y_train, y_test = y[train_idx], y[test_idx]
@@ -180,33 +183,61 @@ def cross_validate_model(train_fn, X, y, n_splits=5, **train_kwargs):
 
         if train_fn is train_svgp:
             model, likelihood = model_info
-            y_pred, var_pred = predict_svgp(model, likelihood, X_test)
+            y_pred_test, var_pred_test = predict_svgp(model, likelihood, X_test)
+            y_pred_train, var_pred_train = predict_svgp(model, likelihood, X_train)
         elif train_fn is train_dkl:
             model, likelihood = model_info
-            y_pred, var_pred = predict_dkl(model, likelihood, X_test)
+            y_pred_test, var_pred_test = predict_dkl(model, likelihood, X_test)
+            y_pred_train, var_pred_train = predict_dkl(model, likelihood, X_train)
         elif train_fn is train_nystrom_gpr:
             transformer, ridge, var_train = model_info
-            y_pred = ridge.predict(transformer.transform(X_test))
-            var_pred = np.ones_like(y_pred) * var_train
+            y_pred_test = ridge.predict(transformer.transform(X_test))
+            var_pred_test = np.ones_like(y_pred_test) * var_train
+            y_pred_train = ridge.predict(transformer.transform(X_train))
+            var_pred_train = np.ones_like(y_pred_train) * var_train
         else:
             model = model_info
             if isinstance(model, GaussianProcessRegressor):
-                y_pred, std_pred = model.predict(X_test, return_std=True)
-                var_pred = std_pred ** 2
+                y_pred_test, std_pred_test = model.predict(X_test, return_std=True)
+                var_pred_test = std_pred_test ** 2
+                y_pred_train, std_pred_train = model.predict(X_train, return_std=True)
+                var_pred_train = std_pred_train ** 2
             else:
-                y_pred = model.predict(X_test)
-                var_pred = np.var(y_train - model.predict(X_train)) * np.ones_like(y_pred)
+                y_pred_test = model.predict(X_test)
+                var_pred_test = np.var(y_train - model.predict(X_train)) * np.ones_like(y_pred_test)
+                y_pred_train = model.predict(X_train)
+                var_pred_train = np.var(y_train - y_pred_train) * np.ones_like(y_pred_train)
 
-        mse = mean_squared_error(y_test, y_pred)
-        mae = mean_absolute_error(y_test, y_pred)
-        r2 = r2_score(y_test, y_pred)
-        metrics.append({"mse": mse, "mae": mae, "r2": r2, "sigma_mean": var_pred.mean() ** 0.5})
-        errors.extend((y_test - y_pred) ** 2)
-        sigmas.extend(var_pred)
+        mse = mean_squared_error(y_test, y_pred_test)
+        mae = mean_absolute_error(y_test, y_pred_test)
+        r2 = r2_score(y_test, y_pred_test)
+        metrics.append({"mse": mse, "mae": mae, "r2": r2, "sigma_mean": var_pred_test.mean() ** 0.5})
+        errors_test.extend((y_test - y_pred_test) ** 2)
+        sigmas_test.extend(var_pred_test)
+        errors_train.extend((y_train - y_pred_train) ** 2)
+        sigmas_train.extend(var_pred_train)
 
     agg = {k: np.mean([m[k] for m in metrics]) for k in metrics[0]}
-    agg["corr_mse_sigma"] = np.corrcoef(errors, sigmas)[0, 1]
-    return agg
+    agg["corr_mse_sigma"] = np.corrcoef(errors_test, sigmas_test)[0, 1]
+    return agg, np.array(errors_train), np.array(sigmas_train), np.array(errors_test), np.array(sigmas_test)
+
+
+def plot_error_sigma_scatter(err_train, sig_train, err_test, sig_test, name):
+    """Save scatter plots of squared error vs predictive sigma."""
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    axes[0].scatter(np.sqrt(sig_train), err_train, alpha=0.5, s=10)
+    axes[0].set_title(f"{name} Train")
+    axes[0].set_xlabel("Predicted sigma")
+    axes[0].set_ylabel("Squared error")
+    axes[1].scatter(np.sqrt(sig_test), err_test, alpha=0.5, s=10)
+    axes[1].set_title(f"{name} Test")
+    axes[1].set_xlabel("Predicted sigma")
+    axes[1].set_ylabel("Squared error")
+    fig.tight_layout()
+    fname = f"{name.replace(' ', '_').lower()}_mse_sigma.png"
+    plt.savefig(fname)
+    plt.close(fig)
+    print(f"Saved scatter plot to {fname}")
 
 
 def evaluate(model, X_test, y_test, predictive_variance=None):
@@ -243,8 +274,11 @@ def main():
     X, y = generate_sparse_data(n_samples=n_samples)
 
     def run(name, fn, **kw):
-        res = cross_validate_model(fn, X, y, n_splits=args.folds, **kw)
+        res, err_tr, sig_tr, err_te, sig_te = cross_validate_model(
+            fn, X, y, n_splits=args.folds, **kw
+        )
         print(f"{name} CV results", res)
+        plot_error_sigma_scatter(err_tr, sig_tr, err_te, sig_te, name)
 
     if args.model in ("exact", "all"):
         run("Exact GPR", train_exact_gpr)
