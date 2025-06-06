@@ -9,6 +9,8 @@ Exact GPR, variational methods, and a simple Deep Kernel Learning (DKL) model.
 Training functions automatically retry with longer optimization if convergence
 issues are detected. Control the retry behaviour with the `--retries` and
 `--max-mult` options.
+Progress for each cross-validation fold is displayed along with the time taken
+so you can monitor long experiments.
 
 Usage example:
 
@@ -30,5 +32,6 @@ To adjust the retry behaviour you can pass `--retries` and `--max-mult`:
 python gpr_sparse_pipeline.py --model svgp --retries 3 --max-mult 2.5
 ```
 
-After each model is evaluated, a scatter plot of squared error vs predicted
-sigma is saved to a PNG file for both the training and test data.
+After each model is evaluated, a scatter plot of squared error versus
+predicted sigma is saved. Training points are plotted in blue and test points
+in red.
