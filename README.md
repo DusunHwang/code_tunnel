@@ -5,9 +5,12 @@ This repository contains utilities for experimenting with Gaussian Process Regre
 The main script `gpr_sparse_pipeline.py` can generate synthetic sparse datasets
 and evaluate several GPR approximations using cross validation. It supports
 Exact GPR, variational methods, and a simple Deep Kernel Learning (DKL) model.
+Progress for each cross-validation fold is displayed along with the time taken
+so you can monitor long experiments.
 
-Training functions automatically retry with longer optimization if convergence
-issues are detected. Control the retry behaviour with the `--retries` and
+After each model is evaluated, a scatter plot of squared error versus
+predicted sigma is saved. Training points are plotted in blue and test points
+in red.
 `--max-mult` options.
 
 Usage example:

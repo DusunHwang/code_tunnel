@@ -7,6 +7,7 @@ from typing import Iterable, Tuple
 import matplotlib.pyplot as plt
 import warnings
 import inspect
+import time
 
 
 from sklearn.model_selection import KFold
@@ -236,8 +237,16 @@ def train_dkl(
     training_iter=150,
     retries=2,
     max_mult=3.0,
-    lr=0.01,
+def cross_validate_model(
+    train_fn, X, y, n_splits=5, progress_name=None, **train_kwargs
 ):
+    for i, (train_idx, test_idx) in enumerate(kf.split(X), 1):
+        if progress_name:
+            print(f"[{progress_name}] Fold {i}/{n_splits} training...")
+        start_time = time.time()
+        if progress_name:
+            duration = time.time() - start_time
+            print(f"[{progress_name}] Fold {i}/{n_splits} finished in {duration:.2f}s")
     if not gpytorch:
         raise ImportError("gpytorch is required for DKL")
 
@@ -308,16 +317,16 @@ def cross_validate_model(train_fn, X, y, n_splits=5, **train_kwargs):
                 var_pred_test = np.var(y_train - model.predict(X_train)) * np.ones_like(
                     y_pred_test
                 )
-                y_pred_train = model.predict(X_train)
-                var_pred_train = np.var(y_train - y_pred_train) * np.ones_like(
-                    y_pred_train
-                )
-
-        mse = mean_squared_error(y_test, y_pred_test)
-        mae = mean_absolute_error(y_test, y_pred_test)
-        r2 = r2_score(y_test, y_pred_test)
-        metrics.append(
-            {
+    """Save scatter plot of squared error vs predictive sigma."""
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.scatter(
+        np.sqrt(sig_train), err_train, alpha=0.5, s=10, label="Train", color="blue"
+    )
+    ax.scatter(np.sqrt(sig_test), err_test, alpha=0.5, s=10, label="Test", color="red")
+    ax.set_title(f"{name} Sigma vs MSE")
+    ax.set_xlabel("Predicted sigma")
+    ax.set_ylabel("Squared error")
+    ax.legend()
                 "mse": mse,
                 "mae": mae,
                 "r2": r2,
@@ -378,7 +387,16 @@ def evaluate(model, X_test, y_test, predictive_variance=None):
     }
 
 
-def main():
+        print(f"Running {name}...")
+        start_total = time.time()
+            fn,
+            X,
+            y,
+            n_splits=args.folds,
+            progress_name=name,
+            **kw,
+        total_time = time.time() - start_total
+        print(f"{name} finished in {total_time:.2f}s")
     parser = argparse.ArgumentParser(description="GPR sparse data pipeline")
     parser.add_argument(
         "--model",
