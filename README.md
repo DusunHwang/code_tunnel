@@ -1,4 +1,3 @@
-
 # Code Tunnel
 
 This repository contains utilities for experimenting with Gaussian Process Regression (GPR) on high-dimensional sparse data.
