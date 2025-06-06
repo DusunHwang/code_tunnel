@@ -83,11 +83,11 @@ class GPyTorchSVGP(gpytorch.models.ApproximateGP if gpytorch else object):
     model.train()
     likelihood.train()
 
-        optimizer.zero_grad()
-        output = model(X_train_t)
-        loss = -mll(output, y_train_t)
-        loss.backward()
-        optimizer.step()
+    optimizer.zero_grad()
+    output = model(X_train_t)
+    loss = -mll(output, y_train_t)
+    loss.backward()
+    optimizer.step()
 
 
 def predict_svgp(model, likelihood, X_test, device="cpu"):
