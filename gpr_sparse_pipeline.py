@@ -4,9 +4,7 @@
 import argparse
 import numpy as np
 from typing import Iterable, Tuple
-import matplotlib.pyplot as plt
-import warnings
-import inspect
+
 
 from sklearn.model_selection import KFold
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
@@ -14,7 +12,6 @@ from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, Matern
 from sklearn.kernel_approximation import Nystroem
 from sklearn.linear_model import Ridge
-from sklearn.exceptions import ConvergenceWarning
 
 try:
     import torch
@@ -34,42 +31,12 @@ def generate_sparse_data(n_samples=3000, n_features=300, nnz=10, noise_std=0.1, 
     return X, y
 
 
-def train_exact_gpr(
-    X_train,
-    y_train,
-    kernel="rbf",
-    n_restarts=1,
-    retries=2,
-    max_mult=3.0,
-):
     if kernel == "rbf":
         kern = RBF(length_scale=1.0)
     elif kernel == "matern32":
         kern = Matern(nu=1.5)
     else:
         kern = RBF(length_scale=1.0)
-
-    best_model = None
-    best_ll = -np.inf
-    base = max(1, n_restarts)
-    restarts = base
-    for _ in range(retries + 1):
-        model = GaussianProcessRegressor(
-            kernel=kern, normalize_y=True, n_restarts_optimizer=restarts
-        )
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            model.fit(X_train, y_train)
-        ll = model.log_marginal_likelihood()
-        if ll > best_ll:
-            best_ll = ll
-            best_model = model
-        conv_warn = any(isinstance(msg.message, ConvergenceWarning) for msg in w)
-        if not conv_warn or restarts >= base * max_mult:
-            break
-        restarts = int(np.ceil(restarts * 1.5))
-
-    return best_model
 
 
 def train_sor(X_train, y_train, subset_size=200, kernel="rbf"):
@@ -108,7 +75,6 @@ class GPyTorchSVGP(gpytorch.models.ApproximateGP if gpytorch else object):
         return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
 
 
-def _train_svgp_once(X_train, y_train, num_inducing, device, training_iter, lr):
     X_train_t = torch.from_numpy(X_train).float().to(device)
     y_train_t = torch.from_numpy(y_train).float().to(device)
     inducing_points = X_train_t[:num_inducing]
@@ -116,53 +82,12 @@ def _train_svgp_once(X_train, y_train, num_inducing, device, training_iter, lr):
     likelihood = gpytorch.likelihoods.GaussianLikelihood().to(device)
     model.train()
     likelihood.train()
-    optimizer = torch.optim.Adam(
-        [{"params": model.parameters()}, {"params": likelihood.parameters()}], lr=lr
-    )
-    mll = gpytorch.mlls.VariationalELBO(
-        likelihood, model, num_data=X_train_t.size(0)
-    )
-    loss_val = None
-    for _ in range(training_iter):
+
         optimizer.zero_grad()
         output = model(X_train_t)
         loss = -mll(output, y_train_t)
         loss.backward()
         optimizer.step()
-        loss_val = loss.item()
-    model.eval()
-    likelihood.eval()
-    return (model, likelihood, loss_val)
-
-
-def train_svgp(
-    X_train,
-    y_train,
-    num_inducing=50,
-    device="cpu",
-    training_iter=200,
-    retries=2,
-    max_mult=3.0,
-    lr=0.1,
-):
-    if not gpytorch:
-        raise ImportError("gpytorch is required for SVGP")
-
-    base_iter = training_iter
-    best_model = None
-    best_loss = float("inf")
-    for _ in range(retries + 1):
-        model, likelihood, loss_val = _train_svgp_once(
-            X_train, y_train, num_inducing, device, training_iter, lr
-        )
-        if loss_val < best_loss:
-            best_loss = loss_val
-            best_model = (model, likelihood)
-        if training_iter >= base_iter * max_mult:
-            break
-        training_iter = int(training_iter * 1.5)
-
-    return best_model
 
 
 def predict_svgp(model, likelihood, X_test, device="cpu"):
@@ -172,7 +97,6 @@ def predict_svgp(model, likelihood, X_test, device="cpu"):
     with torch.no_grad(), gpytorch.settings.fast_pred_var():
         preds = likelihood(model(X_test_t))
     return preds.mean.cpu().numpy(), preds.variance.cpu().numpy()
-
 
 class DKLGP(gpytorch.models.ExactGP if gpytorch else object):
     """Deep Kernel Learning model with a simple MLP feature extractor."""
@@ -198,7 +122,6 @@ class DKLGP(gpytorch.models.ExactGP if gpytorch else object):
         return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
 
 
-def _train_dkl_once(X_train, y_train, feature_dim, device, training_iter, lr):
     X_train_t = torch.from_numpy(X_train).float().to(device)
     y_train_t = torch.from_numpy(y_train).float().to(device)
     likelihood = gpytorch.likelihoods.GaussianLikelihood().to(device)
@@ -206,49 +129,12 @@ def _train_dkl_once(X_train, y_train, feature_dim, device, training_iter, lr):
 
     model.train()
     likelihood.train()
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihood, model)
-    loss_val = None
     for _ in range(training_iter):
         optimizer.zero_grad()
         output = model(X_train_t)
         loss = -mll(output, y_train_t)
         loss.backward()
         optimizer.step()
-        loss_val = loss.item()
-    model.eval()
-    likelihood.eval()
-    return model, likelihood, loss_val
-
-
-def train_dkl(
-    X_train,
-    y_train,
-    feature_dim=32,
-    device="cpu",
-    training_iter=150,
-    retries=2,
-    max_mult=3.0,
-    lr=0.01,
-):
-    if not gpytorch:
-        raise ImportError("gpytorch is required for DKL")
-
-    base_iter = training_iter
-    best_model = None
-    best_loss = float("inf")
-    for _ in range(retries + 1):
-        model, likelihood, loss_val = _train_dkl_once(
-            X_train, y_train, feature_dim, device, training_iter, lr
-        )
-        if loss_val < best_loss:
-            best_loss = loss_val
-            best_model = (model, likelihood)
-        if training_iter >= base_iter * max_mult:
-            break
-        training_iter = int(training_iter * 1.5)
-
-    return best_model
 
 
 def predict_dkl(model, likelihood, X_test, device="cpu"):
@@ -264,10 +150,6 @@ def cross_validate_model(train_fn, X, y, n_splits=5, **train_kwargs):
     """Run K-fold cross validation and compute error metrics."""
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
     metrics = []
-    errors_train: Iterable[float] = []
-    sigmas_train: Iterable[float] = []
-    errors_test: Iterable[float] = []
-    sigmas_test: Iterable[float] = []
     for train_idx, test_idx in kf.split(X):
         X_train, X_test = X[train_idx], X[test_idx]
         y_train, y_test = y[train_idx], y[test_idx]
@@ -275,61 +157,6 @@ def cross_validate_model(train_fn, X, y, n_splits=5, **train_kwargs):
 
         if train_fn is train_svgp:
             model, likelihood = model_info
-            y_pred_test, var_pred_test = predict_svgp(model, likelihood, X_test)
-            y_pred_train, var_pred_train = predict_svgp(model, likelihood, X_train)
-        elif train_fn is train_dkl:
-            model, likelihood = model_info
-            y_pred_test, var_pred_test = predict_dkl(model, likelihood, X_test)
-            y_pred_train, var_pred_train = predict_dkl(model, likelihood, X_train)
-        elif train_fn is train_nystrom_gpr:
-            transformer, ridge, var_train = model_info
-            y_pred_test = ridge.predict(transformer.transform(X_test))
-            var_pred_test = np.ones_like(y_pred_test) * var_train
-            y_pred_train = ridge.predict(transformer.transform(X_train))
-            var_pred_train = np.ones_like(y_pred_train) * var_train
-        else:
-            model = model_info
-            if isinstance(model, GaussianProcessRegressor):
-                y_pred_test, std_pred_test = model.predict(X_test, return_std=True)
-                var_pred_test = std_pred_test ** 2
-                y_pred_train, std_pred_train = model.predict(X_train, return_std=True)
-                var_pred_train = std_pred_train ** 2
-            else:
-                y_pred_test = model.predict(X_test)
-                var_pred_test = np.var(y_train - model.predict(X_train)) * np.ones_like(y_pred_test)
-                y_pred_train = model.predict(X_train)
-                var_pred_train = np.var(y_train - y_pred_train) * np.ones_like(y_pred_train)
-
-        mse = mean_squared_error(y_test, y_pred_test)
-        mae = mean_absolute_error(y_test, y_pred_test)
-        r2 = r2_score(y_test, y_pred_test)
-        metrics.append({"mse": mse, "mae": mae, "r2": r2, "sigma_mean": var_pred_test.mean() ** 0.5})
-        errors_test.extend((y_test - y_pred_test) ** 2)
-        sigmas_test.extend(var_pred_test)
-        errors_train.extend((y_train - y_pred_train) ** 2)
-        sigmas_train.extend(var_pred_train)
-
-    agg = {k: np.mean([m[k] for m in metrics]) for k in metrics[0]}
-    agg["corr_mse_sigma"] = np.corrcoef(errors_test, sigmas_test)[0, 1]
-    return agg, np.array(errors_train), np.array(sigmas_train), np.array(errors_test), np.array(sigmas_test)
-
-
-def plot_error_sigma_scatter(err_train, sig_train, err_test, sig_test, name):
-    """Save scatter plots of squared error vs predictive sigma."""
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-    axes[0].scatter(np.sqrt(sig_train), err_train, alpha=0.5, s=10)
-    axes[0].set_title(f"{name} Train")
-    axes[0].set_xlabel("Predicted sigma")
-    axes[0].set_ylabel("Squared error")
-    axes[1].scatter(np.sqrt(sig_test), err_test, alpha=0.5, s=10)
-    axes[1].set_title(f"{name} Test")
-    axes[1].set_xlabel("Predicted sigma")
-    axes[1].set_ylabel("Squared error")
-    fig.tight_layout()
-    fname = f"{name.replace(' ', '_').lower()}_mse_sigma.png"
-    plt.savefig(fname)
-    plt.close(fig)
-    print(f"Saved scatter plot to {fname}")
 
 
 def evaluate(model, X_test, y_test, predictive_variance=None):
@@ -353,6 +180,7 @@ def evaluate(model, X_test, y_test, predictive_variance=None):
 
 def main():
     parser = argparse.ArgumentParser(description="GPR sparse data pipeline")
+
     parser.add_argument(
         "--model",
         choices=["exact", "sor", "nystrom", "svgp", "dkl", "all"],
@@ -360,34 +188,12 @@ def main():
     )
     parser.add_argument("--folds", type=int, default=5, help="number of CV folds")
     parser.add_argument("--test", action="store_true", help="run a quick test")
-    parser.add_argument(
-        "--retries",
-        type=int,
-        default=2,
-        help="maximum number of additional training attempts",
-    )
-    parser.add_argument(
-        "--max-mult",
-        type=float,
-        default=3.0,
-        help="maximum multiplier for training iterations",
-    )
     args = parser.parse_args()
 
     n_samples = 500 if args.test else 3000
     X, y = generate_sparse_data(n_samples=n_samples)
 
     def run(name, fn, **kw):
-        params = inspect.signature(fn).parameters
-        if "retries" in params:
-            kw.setdefault("retries", args.retries)
-        if "max_mult" in params:
-            kw.setdefault("max_mult", args.max_mult)
-        res, err_tr, sig_tr, err_te, sig_te = cross_validate_model(
-            fn, X, y, n_splits=args.folds, **kw
-        )
-        print(f"{name} CV results", res)
-        plot_error_sigma_scatter(err_tr, sig_tr, err_te, sig_te, name)
 
     if args.model in ("exact", "all"):
         run("Exact GPR", train_exact_gpr)
@@ -409,7 +215,6 @@ def main():
             run("DKL", train_dkl)
         else:
             print("gpytorch not available; skipping DKL")
-
 
 if __name__ == "__main__":
     main()
