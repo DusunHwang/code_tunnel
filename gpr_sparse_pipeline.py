@@ -17,6 +17,7 @@ from sklearn.kernel_approximation import Nystroem
 from sklearn.linear_model import Ridge
 from sklearn.exceptions import ConvergenceWarning
 
+
 try:
     import torch
     import gpytorch
@@ -24,9 +25,7 @@ except ImportError:  # fallback in case gpytorch is not installed
     gpytorch = None
 
 
-def generate_sparse_data(
-    n_samples=3000, n_features=300, nnz=10, noise_std=0.1, random_state=0
-):
+def generate_sparse_data(n_samples=3000, n_features=300, nnz=10, noise_std=0.1, random_state=0):
     rng = np.random.default_rng(random_state)
     X = np.zeros((n_samples, n_features), dtype=np.float32)
     for i in range(n_samples):
@@ -35,7 +34,6 @@ def generate_sparse_data(
     true_w = rng.normal(size=n_features)
     y = X.dot(true_w) + rng.normal(scale=noise_std, size=n_samples)
     return X, y
-
 
 def train_exact_gpr(
     X_train,
@@ -51,7 +49,6 @@ def train_exact_gpr(
         kern = Matern(nu=1.5)
     else:
         kern = RBF(length_scale=1.0)
-
     best_model = None
     best_ll = -np.inf
     base = max(1, n_restarts)
@@ -73,7 +70,6 @@ def train_exact_gpr(
         restarts = int(np.ceil(restarts * 1.5))
 
     return best_model
-
 
 def train_sor(X_train, y_train, subset_size=200, kernel="rbf"):
     """Subset-of-Regressors using a random subset of training data."""
@@ -99,10 +95,9 @@ class GPyTorchSVGP(gpytorch.models.ApproximateGP if gpytorch else object):
             inducing_points.size(0)
         )
         variational_strategy = gpytorch.variational.VariationalStrategy(
-            self,
-            inducing_points,
-            variational_distribution,
-            learn_inducing_locations=True,
+
+            self, inducing_points, variational_distribution, learn_inducing_locations=True
+
         )
         super().__init__(variational_strategy)
         self.mean_module = gpytorch.means.ConstantMean()
@@ -177,7 +172,6 @@ def predict_svgp(model, likelihood, X_test, device="cpu"):
         preds = likelihood(model(X_test_t))
     return preds.mean.cpu().numpy(), preds.variance.cpu().numpy()
 
-
 class DKLGP(gpytorch.models.ExactGP if gpytorch else object):
     """Deep Kernel Learning model with a simple MLP feature extractor."""
 
@@ -198,7 +192,6 @@ class DKLGP(gpytorch.models.ExactGP if gpytorch else object):
         mean_x = self.mean_module(projected)
         covar_x = self.covar_module(projected)
         return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
-
 
 def _train_dkl_once(X_train, y_train, feature_dim, device, training_iter, lr):
     X_train_t = torch.from_numpy(X_train).float().to(device)
@@ -282,6 +275,7 @@ def cross_validate_model(
         if progress_name:
             duration = time.time() - start_time
             print(f"[{progress_name}] Fold {i}/{n_splits} finished in {duration:.2f}s")
+
 
         if train_fn is train_svgp:
             model, likelihood = model_info
@@ -447,7 +441,6 @@ def main():
             run("DKL", train_dkl)
         else:
             print("gpytorch not available; skipping DKL")
-
 
 if __name__ == "__main__":
     main()
