@@ -9,6 +9,10 @@ import warnings
 import inspect
 import time
 
+import os
+from joblib import Parallel, delayed
+
+
 from sklearn.model_selection import KFold
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.gaussian_process import GaussianProcessRegressor
@@ -25,7 +29,23 @@ except ImportError:  # fallback in case gpytorch is not installed
     gpytorch = None
 
 
-def generate_sparse_data(n_samples=3000, n_features=300, nnz=10, noise_std=0.1, random_state=0):
+
+def setup_hardware():
+    """Configure device and threading based on available resources."""
+    num_cpus = os.cpu_count() or 1
+    threads = max(1, int(num_cpus * 0.3))
+    os.environ.setdefault("OMP_NUM_THREADS", str(threads))
+    os.environ.setdefault("MKL_NUM_THREADS", str(threads))
+    if gpytorch:
+        torch.set_num_threads(threads)
+    device = "cuda" if gpytorch and torch.cuda.is_available() else "cpu"
+    return device, threads
+
+
+def generate_sparse_data(
+    n_samples=3000, n_features=300, nnz=10, noise_std=0.1, random_state=0
+):
+
     rng = np.random.default_rng(random_state)
     X = np.zeros((n_samples, n_features), dtype=np.float32)
     for i in range(n_samples):
@@ -34,6 +54,7 @@ def generate_sparse_data(n_samples=3000, n_features=300, nnz=10, noise_std=0.1, 
     true_w = rng.normal(size=n_features)
     y = X.dot(true_w) + rng.normal(scale=noise_std, size=n_samples)
     return X, y
+
 
 def train_exact_gpr(
     X_train,
@@ -49,6 +70,7 @@ def train_exact_gpr(
         kern = Matern(nu=1.5)
     else:
         kern = RBF(length_scale=1.0)
+
     best_model = None
     best_ll = -np.inf
     base = max(1, n_restarts)
@@ -70,6 +92,7 @@ def train_exact_gpr(
         restarts = int(np.ceil(restarts * 1.5))
 
     return best_model
+
 
 def train_sor(X_train, y_train, subset_size=200, kernel="rbf"):
     """Subset-of-Regressors using a random subset of training data."""
@@ -96,7 +119,10 @@ class GPyTorchSVGP(gpytorch.models.ApproximateGP if gpytorch else object):
         )
         variational_strategy = gpytorch.variational.VariationalStrategy(
 
-            self, inducing_points, variational_distribution, learn_inducing_locations=True
+            self,
+            inducing_points,
+            variational_distribution,
+            learn_inducing_locations=True,
 
         )
         super().__init__(variational_strategy)
@@ -172,6 +198,7 @@ def predict_svgp(model, likelihood, X_test, device="cpu"):
         preds = likelihood(model(X_test_t))
     return preds.mean.cpu().numpy(), preds.variance.cpu().numpy()
 
+
 class DKLGP(gpytorch.models.ExactGP if gpytorch else object):
     """Deep Kernel Learning model with a simple MLP feature extractor."""
 
@@ -192,6 +219,7 @@ class DKLGP(gpytorch.models.ExactGP if gpytorch else object):
         mean_x = self.mean_module(projected)
         covar_x = self.covar_module(projected)
         return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
+
 
 def _train_dkl_once(X_train, y_train, feature_dim, device, training_iter, lr):
     X_train_t = torch.from_numpy(X_train).float().to(device)
@@ -256,16 +284,19 @@ def predict_dkl(model, likelihood, X_test, device="cpu"):
 
 
 def cross_validate_model(
-    train_fn, X, y, n_splits=5, progress_name=None, **train_kwargs
+
+    train_fn,
+    X,
+    y,
+    n_splits=5,
+    progress_name=None,
+    n_jobs=1,
+    **train_kwargs,
 ):
     """Run K-fold cross validation and compute error metrics."""
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
-    metrics = []
-    errors_train: Iterable[float] = []
-    sigmas_train: Iterable[float] = []
-    errors_test: Iterable[float] = []
-    sigmas_test: Iterable[float] = []
-    for i, (train_idx, test_idx) in enumerate(kf.split(X), 1):
+
+    def _one_fold(i, train_idx, test_idx):
+
         if progress_name:
             print(f"[{progress_name}] Fold {i}/{n_splits} training...")
         start_time = time.time()
@@ -311,28 +342,38 @@ def cross_validate_model(
         mse = mean_squared_error(y_test, y_pred_test)
         mae = mean_absolute_error(y_test, y_pred_test)
         r2 = r2_score(y_test, y_pred_test)
-        metrics.append(
+
+        return (
+
             {
                 "mse": mse,
                 "mae": mae,
                 "r2": r2,
                 "sigma_mean": var_pred_test.mean() ** 0.5,
-            }
+
+            },
+            (y_train - y_pred_train) ** 2,
+            var_pred_train,
+            (y_test - y_pred_test) ** 2,
+            var_pred_test,
         )
-        errors_test.extend((y_test - y_pred_test) ** 2)
-        sigmas_test.extend(var_pred_test)
-        errors_train.extend((y_train - y_pred_train) ** 2)
-        sigmas_train.extend(var_pred_train)
+
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+    results = Parallel(n_jobs=n_jobs, prefer="threads")(
+        delayed(_one_fold)(i, train_idx, test_idx)
+        for i, (train_idx, test_idx) in enumerate(kf.split(X), 1)
+    )
+
+    metrics = [r[0] for r in results]
+    errors_train = np.concatenate([r[1] for r in results])
+    sigmas_train = np.concatenate([r[2] for r in results])
+    errors_test = np.concatenate([r[3] for r in results])
+    sigmas_test = np.concatenate([r[4] for r in results])
 
     agg = {k: np.mean([m[k] for m in metrics]) for k in metrics[0]}
     agg["corr_mse_sigma"] = np.corrcoef(errors_test, sigmas_test)[0, 1]
-    return (
-        agg,
-        np.array(errors_train),
-        np.array(sigmas_train),
-        np.array(errors_test),
-        np.array(sigmas_test),
-    )
+    return agg, errors_train, sigmas_train, errors_test, sigmas_test
+
 
 
 def plot_error_sigma_scatter(err_train, sig_train, err_test, sig_test, name):
@@ -397,6 +438,11 @@ def main():
     )
     args = parser.parse_args()
 
+
+    device, threads = setup_hardware()
+    n_jobs = 1 if device == "cuda" else threads
+
+
     n_samples = 500 if args.test else 3000
     X, y = generate_sparse_data(n_samples=n_samples)
 
@@ -406,6 +452,10 @@ def main():
             kw.setdefault("retries", args.retries)
         if "max_mult" in params:
             kw.setdefault("max_mult", args.max_mult)
+
+        if "device" in params:
+            kw.setdefault("device", device)
+
         print(f"Running {name}...")
         start_total = time.time()
         res, err_tr, sig_tr, err_te, sig_te = cross_validate_model(
@@ -414,6 +464,7 @@ def main():
             y,
             n_splits=args.folds,
             progress_name=name,
+
             **kw,
         )
         total_time = time.time() - start_total
@@ -441,6 +492,7 @@ def main():
             run("DKL", train_dkl)
         else:
             print("gpytorch not available; skipping DKL")
+
 
 if __name__ == "__main__":
     main()

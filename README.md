@@ -9,6 +9,8 @@ Exact GPR, variational methods, and a simple Deep Kernel Learning (DKL) model.
 Training functions automatically retry with longer optimization if convergence
 issues are detected. Control the retry behaviour with the `--retries` and
 `--max-mult` options.
+When a CUDA GPU is available the script uses it automatically. CPU workloads
+are parallelised across roughly 30% of the available cores.
 Progress for each cross-validation fold is displayed along with the time taken
 so you can monitor long experiments.
 
