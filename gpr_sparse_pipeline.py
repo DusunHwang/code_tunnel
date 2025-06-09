@@ -8,8 +8,10 @@ import matplotlib.pyplot as plt
 import warnings
 import inspect
 import time
+
 import os
 from joblib import Parallel, delayed
+
 
 from sklearn.model_selection import KFold
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
@@ -19,11 +21,13 @@ from sklearn.kernel_approximation import Nystroem
 from sklearn.linear_model import Ridge
 from sklearn.exceptions import ConvergenceWarning
 
+
 try:
     import torch
     import gpytorch
 except ImportError:  # fallback in case gpytorch is not installed
     gpytorch = None
+
 
 
 def setup_hardware():
@@ -41,6 +45,7 @@ def setup_hardware():
 def generate_sparse_data(
     n_samples=3000, n_features=300, nnz=10, noise_std=0.1, random_state=0
 ):
+
     rng = np.random.default_rng(random_state)
     X = np.zeros((n_samples, n_features), dtype=np.float32)
     for i in range(n_samples):
@@ -113,10 +118,12 @@ class GPyTorchSVGP(gpytorch.models.ApproximateGP if gpytorch else object):
             inducing_points.size(0)
         )
         variational_strategy = gpytorch.variational.VariationalStrategy(
+
             self,
             inducing_points,
             variational_distribution,
             learn_inducing_locations=True,
+
         )
         super().__init__(variational_strategy)
         self.mean_module = gpytorch.means.ConstantMean()
@@ -277,6 +284,7 @@ def predict_dkl(model, likelihood, X_test, device="cpu"):
 
 
 def cross_validate_model(
+
     train_fn,
     X,
     y,
@@ -288,6 +296,7 @@ def cross_validate_model(
     """Run K-fold cross validation and compute error metrics."""
 
     def _one_fold(i, train_idx, test_idx):
+
         if progress_name:
             print(f"[{progress_name}] Fold {i}/{n_splits} training...")
         start_time = time.time()
@@ -297,6 +306,7 @@ def cross_validate_model(
         if progress_name:
             duration = time.time() - start_time
             print(f"[{progress_name}] Fold {i}/{n_splits} finished in {duration:.2f}s")
+
 
         if train_fn is train_svgp:
             model, likelihood = model_info
@@ -332,12 +342,15 @@ def cross_validate_model(
         mse = mean_squared_error(y_test, y_pred_test)
         mae = mean_absolute_error(y_test, y_pred_test)
         r2 = r2_score(y_test, y_pred_test)
+
         return (
+
             {
                 "mse": mse,
                 "mae": mae,
                 "r2": r2,
                 "sigma_mean": var_pred_test.mean() ** 0.5,
+
             },
             (y_train - y_pred_train) ** 2,
             var_pred_train,
@@ -360,6 +373,7 @@ def cross_validate_model(
     agg = {k: np.mean([m[k] for m in metrics]) for k in metrics[0]}
     agg["corr_mse_sigma"] = np.corrcoef(errors_test, sigmas_test)[0, 1]
     return agg, errors_train, sigmas_train, errors_test, sigmas_test
+
 
 
 def plot_error_sigma_scatter(err_train, sig_train, err_test, sig_test, name):
@@ -424,8 +438,10 @@ def main():
     )
     args = parser.parse_args()
 
+
     device, threads = setup_hardware()
     n_jobs = 1 if device == "cuda" else threads
+
 
     n_samples = 500 if args.test else 3000
     X, y = generate_sparse_data(n_samples=n_samples)
@@ -436,8 +452,10 @@ def main():
             kw.setdefault("retries", args.retries)
         if "max_mult" in params:
             kw.setdefault("max_mult", args.max_mult)
+
         if "device" in params:
             kw.setdefault("device", device)
+
         print(f"Running {name}...")
         start_total = time.time()
         res, err_tr, sig_tr, err_te, sig_te = cross_validate_model(
@@ -446,7 +464,7 @@ def main():
             y,
             n_splits=args.folds,
             progress_name=name,
-            n_jobs=n_jobs,
+
             **kw,
         )
         total_time = time.time() - start_total
