@@ -37,3 +37,14 @@ python gpr_sparse_pipeline.py --model svgp --retries 3 --max-mult 2.5
 After each model is evaluated, a scatter plot of squared error versus
 predicted sigma is saved. Training points are plotted in blue and test points
 in red.
+
+## Hybrid CCM Example
+
+The script `hybrid_ccm_predictor.py` demonstrates a basic hybrid color
+correction matrix model. When run without arguments it loads Lab values from
+the ``ColorChecker N Ohta`` dataset and trains separate CCMs for fluorescent and
+non-fluorescent patches.
+
+```bash
+python hybrid_ccm_predictor.py
+```
