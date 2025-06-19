@@ -1,3 +1,6 @@
+https://www.nature.com/articles/npjcompumats20162?utm_source=chatgpt.com
+
+
 아래 두 부분으로 정리해서 답변드립니다:
 
 ⸻
