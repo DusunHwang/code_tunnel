@@ -1,3 +1,73 @@
+아래 두 부분으로 정리해서 답변드립니다:
+
+⸻
+
+1️. “Li 농도(x)별 전압 추정” → DFT 여러 조성 + convex hull 방식 필요
+	•	**예측하려는 전압 플롯(voltage profile)**은 단일 평균값이 아닌 조성 x에 따라 달라지는 piecewise 전압 구간들입니다.
+	•	이를 정확히 계산하려면 여러 조성 (x₁, x₂, x₃ …)에 대해 각각의 DFT total energy E[\text{Li}_xB]를 계산해야 합니다.
+	•	그리고 formation energy vs x의 convex hull을 구성합니다. stable한 구성들의 기울기로 전압 프로파일을 얻습니다  ￼ ￼.
+
+예: NaₓMnO₂ 시스템에서 실제 실험 전압 곡선과 잘 일치하는 piecewise 계산이 이루어졌음  ￼.
+
+	•	x = 0 → 0.3 → 1.0 같이 세 구간이라면,
+	•	각 구간 [x₁ → x₂]에 대해 아래 식으로 전압 계산:
+
+V_{i→j} = - \frac{E[x_j] + (x_i - x_j)E_{\mathrm{Li}} - E[x_i]}{(x_i - x_j) \cdot F}
+	•	이 방식은 전압이 x에 따라 어떻게 바뀌는지를 정확하게 보여주는 stair-step 형태의 전압-조성 곡선(plateau) 생성에 필수입니다  ￼.
+
+⸻
+
+2️. “DFT 전압은 Open Circuit Potential (OCP)인가?”
+	•	예, DFT 기반 전압은론적으로 OCP와 같은 값입니다.
+	•	Open Circuit Potential은 외부 전류가 흐르지 않을 때 전극 간 평형 전위차입니다.
+	•	DFT 전압은 ΔG ≈ ΔE 근사 하에서 각 평형 조성 상태 간 자유에너지 차이로 계산되므로, 잠재적으로 OCP에 대응하는 이론적 equilibrium voltage입니다  ￼.
+
+⸻
+
+🖥️ 3. pymatgen을 활용한 계산 & 시각화 방법
+
+🔧 A. 필요한 모듈
+
+from pymatgen.apps.battery.insertion_battery import InsertionVoltagePair
+from pymatgen.apps.battery.plotter import VoltageProfilePlotter
+
+🔁 B. 여러 조성 전압 페어 계산
+
+# 각 조성에 대한 ComputedEntry (x1, x2 포함)
+vp = InsertionVoltagePair.from_entries(entry_xi, entry_xj, working_ion_entry=li_entry)
+
+	•	위에서 LiₓB_i → LiₓB_j 전환에 대한 평균 전압을 계산하는 객체 생성
+
+📈 C. 전압 프로파일 플롯
+
+plotter = VoltageProfilePlotter(xaxis="frac_x")
+for pair in voltage_pairs:
+    plotter.add_electrode(pair)
+ax = plotter.get_plot()
+ax.figure.savefig("voltage_profile.png")
+
+	•	그래프에서 각 구간별 전압 plateau 시각적으로 확인 가능  ￼
+
+⸻
+
+🔍 요약 정리
+
+질문	답변
+Li 농도별 전압 추정	다수의 조성에 대해 DFT 수행 및 convex hull 기반 전압 계산 필요
+이 값이 OCP인가?	네, 외부 회로 없는 평형 상태의 OCP 이론값에 해당
+pymatgen 활용 가능?	예, InsertionVoltagePair + VoltageProfilePlotter로 쉽게 구현가능
+
+
+⸻
+
+✅ 추가 도움이 필요하시면…
+	•	LiₓFePO₄ 등 특정 시스템 예시 코드
+	•	Literature 기반 계산 vs 실험 전압 비교 논문
+	•	온도/엔트로피 고려한 voltage smoothing 및 cluster-expansion 방법
+
+원하시는 방향 알려주세요!
+
+-----
 아래는 LiₓFePO₄ 시스템을 대상으로 pymatgen을 통해 Li 농도별 전압 프로파일과 Open Circuit Potential(OCP)을 추정하는 예시 코드와, 이론적인 결과 예시입니다.
 
 ⸻
